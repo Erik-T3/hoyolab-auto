@@ -1,0 +1,51 @@
+services:
+  instance:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hoyolab-auto:local
+    container_name: hoyolab-auto
+    restart: unless-stopped
+    init: true
+
+    user: "${PUID:-1000}:${PGID:-1000}"
+
+    environment:
+      NODE_ENV: production
+      TZ: Europe/London
+
+    # Keep cookie-bearing diagnostics private if an error reaches the log.
+    command: ["/bin/sh", "-c", "umask 077 && exec node index.js"]
+
+    # The Docker host currently reports an unhealthy Tailscale DNS resolver.
+    # Keep the service independent without changing DNS for the whole VM.
+    dns:
+      - 1.1.1.1
+      - 9.9.9.9
+
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+
+    volumes:
+      - type: bind
+        source: ${HOYOLAB_CONFIG_FILE:-/etc/hoyolab-auto/config.json5}
+        target: /app/config.json5
+        read_only: true
+      - type: bind
+        source: ${HOYOLAB_DATA_DIR:-/var/lib/hoyolab-auto}
+        target: /app/data
+      - type: bind
+        source: ${HOYOLAB_LOG_DIR:-/var/log/hoyolab-auto}
+        target: /app/logs
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

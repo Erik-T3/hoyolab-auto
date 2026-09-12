@@ -1,3 +1,7 @@
+const redactSecrets = (value) => typeof value === "string"
+	? value.replaceAll(/(api\.telegram\.org\/bot)[^/\s)]+/gi, "$1[REDACTED]")
+	: value;
+
 const definition = {
 	name: "Global",
 	optionsType: "function",
@@ -30,13 +34,17 @@ const definition = {
 						}
 
 						const method = err.options?.method?.toUpperCase?.() ?? "UNKNOWN";
-						const endpoint = err.options?.url?.toString?.() ?? null;
+						const endpoint = redactSecrets(err.options?.url?.toString?.() ?? null);
 						const code = err.code ?? null;
 						const responseType = err.options?.responseType ?? null;
 						const timeout = err.options?.timeout ?? null;
 
 						app.Logger.debug("GotRequest", {
-							message: err.message,
+							error: {
+								name: err.name,
+								message: redactSecrets(err.message),
+								stack: redactSecrets(err.stack)
+							},
 							context: {
 								code,
 								responseType,

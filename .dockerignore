@@ -1,1 +1,19 @@
+# Development and source-control metadata
+.git
+.github
+.gitignore
 node_modules
+
+# Local credentials must never be copied into an image layer.
+/config.json5
+
+# Runtime state is supplied through writable mounts.
+/data
+/logs
+
+# Local-only build and orchestration files
+Dockerfile.upstream
+docker-compose*.yml
+
+# Local diagnostics
+npm-debug.log*

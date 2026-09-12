@@ -3,6 +3,10 @@ module.exports = class Telegram extends require("./template.js") {
 	firstRun = true;
 	disableNotification = false;
 	messageListeners = [];
+	connecting = false;
+	pollTimer = null;
+	pollIntervalMs = 5000;
+	errorBackoffMs = 15000;
 
 	handlingCallbackQuery = false;
 
@@ -27,44 +31,79 @@ module.exports = class Telegram extends require("./template.js") {
 			});
 		}
 
-		// If you received error message such as "409: Conflict", try to increase the interval
-		setInterval(() => this.connect(), 5000);
 	}
 
 	async connect () {
-		const res = await app.Got("API", {
-			url: `https://api.telegram.org/bot${this.token}/getUpdates`,
-			method: "POST",
-			responseType: "json",
-			throwHttpErrors: false,
-			json: {
-				offset: this.lastUpdatedId + 1,
-				allowed_updates: ["message", "callback_query"]
-			}
-		});
+		if (this.connecting) {
+			return false;
+		}
 
-		if (res.body.ok !== true) {
-			throw new app.Error({
-				message: "Failed to get telegram updates",
-				args: {
-					statusCode: res.statusCode,
-					statusMessage: res.statusMessage,
-					body: res.body
+		this.connecting = true;
+		let nextPollDelay = this.pollIntervalMs;
+
+		try {
+			const res = await app.Got("API", {
+				url: `https://api.telegram.org/bot${this.token}/getUpdates`,
+				method: "POST",
+				responseType: "json",
+				throwHttpErrors: false,
+				json: {
+					offset: this.lastUpdatedId + 1,
+					timeout: this.firstRun ? 0 : 20,
+					allowed_updates: ["message", "callback_query"]
 				}
 			});
-		}
 
-		if (this.firstRun) {
-			this.firstRun = false;
-			return;
-		}
+			if (res.body.ok !== true) {
+				const retryAfter = Number(res.body?.parameters?.retry_after);
+				if (Number.isFinite(retryAfter) && retryAfter > 0) {
+					nextPollDelay = Math.max(this.errorBackoffMs, (retryAfter + 1) * 1000);
+				}
+				else {
+					nextPollDelay = this.errorBackoffMs;
+				}
 
-		const { result } = res.body;
+				app.Logger.warn("Telegram", `Polling failed with status ${res.statusCode}; retrying in ${nextPollDelay / 1000}s`);
+				throw new app.Error({
+					message: "Failed to get telegram updates",
+					args: {
+						statusCode: res.statusCode,
+						statusMessage: res.statusMessage,
+						body: res.body
+					}
+				});
+			}
 
-		if (result.length > 0) {
-			await this.processMessageUpdates(result);
-			this.lastUpdatedId = result[result.length - 1].update_id;
+			if (this.firstRun) {
+				this.firstRun = false;
+				return true;
+			}
+
+			const { result } = res.body;
+
+			if (result.length > 0) {
+				await this.processMessageUpdates(result);
+				this.lastUpdatedId = result[result.length - 1].update_id;
+			}
+
+			return true;
 		}
+		catch (error) {
+			nextPollDelay = Math.max(nextPollDelay, this.errorBackoffMs);
+			throw error;
+		}
+		finally {
+			this.connecting = false;
+			this.scheduleNextPoll(nextPollDelay);
+		}
+	}
+
+	scheduleNextPoll (delay) {
+		clearTimeout(this.pollTimer);
+		this.pollTimer = setTimeout(() => {
+			this.pollTimer = null;
+			this.connect().catch(() => undefined);
+		}, delay);
 	}
 
 	async send (message, options = {}) {
