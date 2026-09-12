@@ -222,3 +222,7 @@ bun.lockb
 
 # Local helper
 diff.sh
+
+# Local operational documentation contains hostnames, paths, and deployment
+# details and is intentionally kept out of the public GitHub fork.
+/hoyolab-auto-build-update-runbook.md
