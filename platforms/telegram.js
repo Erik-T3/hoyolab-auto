@@ -30,7 +30,6 @@ module.exports = class Telegram extends require("./template.js") {
 				message: "Telegram token has not been configured for the bot"
 			});
 		}
-
 	}
 
 	async connect () {
@@ -88,9 +87,9 @@ module.exports = class Telegram extends require("./template.js") {
 
 			return true;
 		}
-		catch (error) {
+		catch (e) {
 			nextPollDelay = Math.max(nextPollDelay, this.errorBackoffMs);
-			throw error;
+			throw e;
 		}
 		finally {
 			this.connecting = false;
