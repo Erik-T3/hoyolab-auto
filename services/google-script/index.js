@@ -1,4 +1,6 @@
+/* global PropertiesService, UrlFetchApp, Utilities, HoyoLabI18n */
 const config = {
+	language: "en-us", // Software language; API requests are unchanged.
 	enableCodeRedemption: false, // Set to true to enable automatic code redemption
 	notifyOnRedeemFailure: false, // Set to true to also report codes that failed to redeem
 	genshin: {
@@ -33,24 +35,24 @@ const config = {
 
 // Function to reset redeemed codes for all games
 function resetAllRedeemedCodes () {
-	const games = ["genshin", "honkai", "starrail", "zenless"];
-	for (const game of games) {
-		PropertiesService.getScriptProperties().deleteProperty(`${game}_redeemed_codes`);
+	const properties = PropertiesService.getScriptProperties();
+	for (const key of Object.keys(properties.getProperties())) {
+		if (key.endsWith("_redeemed_codes")) {
+			properties.deleteProperty(key);
+		}
 	}
-	console.log("Redeemed codes for all games have been reset.");
+	console.log(t("All stored redeemed codes have been reset."));
 }
 
-// Function to view all stored redeemed codes
 function viewAllRedeemedCodes () {
-	const games = ["genshin", "honkai", "starrail", "zenless"];
 	const allCodes = {};
-
-	for (const game of games) {
-		const redeemedCodes = PropertiesService.getScriptProperties().getProperty(`${game}_redeemed_codes`);
-		allCodes[game] = redeemedCodes ? JSON.parse(redeemedCodes) : [];
+	const properties = PropertiesService.getScriptProperties().getProperties();
+	for (const [key, value] of Object.entries(properties)) {
+		if (key.endsWith("_redeemed_codes")) {
+			allCodes[key] = JSON.parse(value);
+		}
 	}
-
-	console.log("All redeemed codes:", allCodes);
+	console.log(t("All redeemed codes:"), allCodes);
 	return allCodes;
 }
 
@@ -152,6 +154,83 @@ const RETRYABLE_REDEEM_RETCODES = [
 	-2016 // redemption cooldown
 ];
 
+function isAuthenticationError (data) {
+	return [-100, -10001, -1071].includes(data.retcode)
+		|| /(?:please\s+)?log\s*in|login/i.test(String(data.message ?? ""));
+}
+
+function getAccountId (cookie) {
+	return cookie.match(/(?:^|;\s*)ltuid(?:_v2)?=([^;]+)/)?.[1];
+}
+
+function saveAccountDetails (game, cookie, details) {
+	const accountId = getAccountId(cookie);
+	if (!accountId) {
+		return;
+	}
+	const key = `${game.name}_${accountId}_account_details`;
+	const value = JSON.stringify({ uid: details.uid, nickname: details.nickname, region: details.region });
+	const properties = PropertiesService.getScriptProperties();
+	if (properties.getProperty(key) !== value) {
+		properties.setProperty(key, value);
+	}
+}
+
+function getCookieFingerprint (cookie) {
+	return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, cookie)
+		.map(byte => (byte & 255).toString(16).padStart(2, "0")).join("");
+}
+
+// Store only a cookie fingerprint and alert state, never the cookie itself.
+function updateAuthenticationAlert (game, cookie, operation, failed) {
+	const accountId = getAccountId(cookie);
+	if (!accountId) {
+		return;
+	}
+	const key = `${game.name}_${accountId}_auth_alert`;
+	const properties = PropertiesService.getScriptProperties();
+	const fingerprint = getCookieFingerprint(cookie);
+	const saved = JSON.parse(properties.getProperty(key) || "null");
+	const state = saved?.fingerprint === fingerprint ? saved : { fingerprint, operations: [], notified: false };
+	state.operations = state.operations.filter(item => item !== operation);
+	if (failed) {
+		state.operations.push(operation);
+	}
+	if (state.operations.length === 0) {
+		properties.deleteProperty(key);
+		return;
+	}
+	if (failed && !state.notified && DISCORD_WEBHOOK) {
+		const account = JSON.parse(properties.getProperty(`${game.name}_${accountId}_account_details`) || "null");
+		const fields = [{ name: "HoYoLAB ID", value: accountId, inline: true }];
+		if (account) {
+			fields.push(
+				{ name: "UID", value: String(account.uid), inline: true },
+				{ name: "Nickname", value: account.nickname, inline: true },
+				{ name: "Region", value: account.region, inline: true }
+			);
+		}
+		try {
+			state.notified = postDiscordPayload({
+				username: game.config.assets.author,
+				avatar_url: game.config.assets.icon,
+				embeds: [{
+					color: 0xED4245,
+					title: `${game.fullName} Authentication Failed`,
+					author: account ? { name: `${account.uid} - ${account.nickname}`, icon_url: game.config.assets.icon } : undefined,
+					description: `${operation[0].toUpperCase()}${operation.slice(1)} requires a valid cookie. Replace this account's cookie in the script configuration. Check-in and code redemption use different tokens, so one can work while the other fails.`,
+					fields,
+					timestamp: new Date()
+				}]
+			}) === true;
+		}
+		catch (e) {
+			console.error("Could not deliver authentication alert:", e.message);
+		}
+	}
+	properties.setProperty(key, JSON.stringify(state));
+}
+
 class Game {
 	/**
      * @param {string} name - The short name of the game (e.g., "genshin").
@@ -162,9 +241,10 @@ class Game {
 		this.fullName = DEFAULT_CONSTANTS[name].game; // Get full name from constants
 		this.config = { ...DEFAULT_CONSTANTS[name], ...config.config };
 		this.data = config.data || [];
+		this.redemptionAccounts = [];
 
 		if (this.data.length === 0) {
-			console.warn(`No ${this.fullName} accounts provided. Skipping...`);
+			console.warn(t `No ${this.fullName} accounts provided. Skipping...`);
 			return;
 		}
 	}
@@ -172,7 +252,7 @@ class Game {
 	async checkAndExecute () {
 		const accounts = this.data;
 		if (accounts.length === 0) {
-			console.warn(`No active accounts found for ${this.fullName}`);
+			console.warn(t `No active accounts found for ${this.fullName}`);
 			return [];
 		}
 
@@ -185,8 +265,15 @@ class Game {
 					continue;
 				}
 
+				this.redemptionAccounts.push({ ...accountDetails, cookie });
 				const info = await this.getSignInfo(cookie);
 				if (!info.success) {
+					continue;
+				}
+
+				if (info.data.isSigned) {
+					updateAuthenticationAlert(this, cookie, "check-in", false);
+					console.info(`${this.fullName}:CheckIn`, "Already signed in today");
 					continue;
 				}
 
@@ -202,11 +289,6 @@ class Game {
 					isSigned: info.data.isSigned
 				};
 
-				if (data.isSigned) {
-					console.info(`${this.fullName}:CheckIn`, "Already signed in today");
-					continue;
-				}
-
 				const totalSigned = data.total;
 				const awardObject = {
 					name: awards[totalSigned].name,
@@ -219,15 +301,16 @@ class Game {
 					continue;
 				}
 
+				updateAuthenticationAlert(this, cookie, "check-in", false);
 				console.info(
 					`${this.fullName}:CheckIn`,
-					`Today's Reward: ${awardObject.name} x${awardObject.count}`
+					t `Today's Reward: ${awardObject.name} x${awardObject.count}`
 				);
 
 				success.push({
 					platform: this.name,
 					total: data.total + 1,
-					result: this.config.successMessage,
+					result: t(this.config.successMessage),
 					assets: { ...this.config.assets },
 					account: {
 						uid: accountDetails.uid,
@@ -251,6 +334,7 @@ class Game {
 		try {
 			const options = {
 				method: "GET",
+				muteHttpExceptions: true,
 				headers: {
 					"User-Agent": this.userAgent,
 					Cookie: cookieData
@@ -260,25 +344,30 @@ class Game {
 			const url = `https://bbs-api-os.hoyolab.com/game_record/card/wapi/getGameRecordCard?uid=${ltuid}`;
 			const response = await UrlFetchApp.fetch(url, options);
 			const data = JSON.parse(response.getContentText());
+			if (isAuthenticationError(data)) {
+				updateAuthenticationAlert(this, cookieData, "check-in", true);
+			}
 
 			if (response.getResponseCode() !== 200 || data.retcode !== 0) {
-				throw new Error(`Failed to login to ${this.fullName} account: ${JSON.stringify(data)}`);
+				throw new Error(t `Failed to login to ${this.fullName} account: ${JSON.stringify(data)}`);
 			}
 
 			const accountData = data.data.list.find(account => account.game_id === this.config.gameId);
 			if (!accountData) {
-				throw new Error(`No ${this.fullName} account found for ltuid: ${ltuid}`);
+				throw new Error(t `No ${this.fullName} account found for ltuid: ${ltuid}`);
 			}
 
-			return {
+			const details = {
 				uid: accountData.game_role_id,
 				nickname: accountData.nickname,
 				rank: accountData.level,
 				region: this.fixRegion(accountData.region)
 			};
+			saveAccountDetails(this, cookieData, details);
+			return details;
 		}
 		catch (e) {
-			console.error(`${this.fullName}:login`, `Error: ${e.message}`);
+			console.error(`${this.fullName}:login`, t `Error: ${e.message}`);
 			throw e; // Re-throw to be handled by the caller
 		}
 	}
@@ -288,6 +377,7 @@ class Game {
 			const payload = { act_id: this.config.ACT_ID };
 			const options = {
 				method: "POST",
+				muteHttpExceptions: true,
 				contentType: "application/json",
 				headers: {
 					"User-Agent": this.userAgent,
@@ -299,16 +389,19 @@ class Game {
 
 			const response = UrlFetchApp.fetch(this.config.url.sign, options);
 			const data = JSON.parse(response.getContentText());
+			if (isAuthenticationError(data)) {
+				updateAuthenticationAlert(this, cookieData, "check-in", true);
+			}
 
 			if (response.getResponseCode() !== 200 || data.retcode !== 0) {
-				console.error(`${this.fullName}:sign`, "Failed to sign in.", data);
+				console.error(`${this.fullName}:sign`, t("Failed to sign in."), data);
 				return { success: false };
 			}
 
 			return { success: true };
 		}
 		catch (e) {
-			console.error(`${this.fullName}:sign`, `Error: ${e.message}`);
+			console.error(`${this.fullName}:sign`, t `Error: ${e.message}`);
 			return { success: false };
 		}
 	}
@@ -330,17 +423,22 @@ class Game {
 		try {
 			const url = `${this.config.url.info}?act_id=${this.config.ACT_ID}`;
 			const response = await UrlFetchApp.fetch(url, {
+				muteHttpExceptions: true,
 				headers: {
+					"User-Agent": this.userAgent,
 					Cookie: cookieData,
 					"x-rpc-signgame": this.getSignGameHeader()
 				}
 			});
 			const data = JSON.parse(response.getContentText());
+			if (isAuthenticationError(data)) {
+				updateAuthenticationAlert(this, cookieData, "check-in", true);
+			}
 
 			if (response.getResponseCode() !== 200 || data.retcode !== 0) {
 				console.error(
 					`${this.fullName}:getSignInfo`,
-					"Failed to get sign info.",
+					t("Failed to get sign info."),
 					data
 				);
 				return { success: false };
@@ -356,7 +454,7 @@ class Game {
 			};
 		}
 		catch (e) {
-			console.error(`${this.fullName}:getSignInfo`, `Error: ${e.message}`);
+			console.error(`${this.fullName}:getSignInfo`, t `Error: ${e.message}`);
 			return { success: false };
 		}
 	}
@@ -365,17 +463,22 @@ class Game {
 		try {
 			const url = `${this.config.url.home}?act_id=${this.config.ACT_ID}`;
 			const response = await UrlFetchApp.fetch(url, {
+				muteHttpExceptions: true,
 				headers: {
+					"User-Agent": this.userAgent,
 					Cookie: cookieData,
 					"x-rpc-signgame": this.getSignGameHeader()
 				}
 			});
 			const data = JSON.parse(response.getContentText());
+			if (isAuthenticationError(data)) {
+				updateAuthenticationAlert(this, cookieData, "check-in", true);
+			}
 
 			if (response.getResponseCode() !== 200 || data.retcode !== 0) {
 				console.error(
 					`${this.fullName}:getAwardsData`,
-					"Failed to get awards data.",
+					t("Failed to get awards data."),
 					data
 				);
 				return { success: false };
@@ -384,7 +487,7 @@ class Game {
 			if (data.data.awards.length === 0) {
 				console.warn(
 					`${this.fullName}:getAwardsData`,
-					"No awards data available."
+					t("No awards data available.")
 				);
 			}
 
@@ -393,7 +496,7 @@ class Game {
 		catch (e) {
 			console.error(
 				`${this.fullName}:getAwardsData`,
-				`Error: ${e.message}`
+				t `Error: ${e.message}`
 			);
 			return { success: false };
 		}
@@ -425,17 +528,21 @@ class Game {
 	}
 
 	get userAgent () {
-		return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+		return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36";
+	}
+
+	getAccountLabel (account) {
+		return `${this.fullName} (${account.nickname} - ${account.uid})`;
 	}
 
 	async redeemCodes (account) {
 		const codes = await this.fetchCodes();
-		const redeemedCodes = this.getRedeemedCodes();
+		const redeemedCodes = this.getRedeemedCodes(account);
 		const results = [];
 
-		for (const code of codes) {
+		for (const [index, code] of codes.entries()) {
 			if (redeemedCodes.includes(code.code)) {
-				console.log(`Code ${code.code} already redeemed for ${this.fullName}`);
+				console.log(t `Code ${code.code} already redeemed for ${this.getAccountLabel(account)}`);
 				continue;
 			}
 
@@ -443,12 +550,23 @@ class Game {
 			Utilities.sleep(6000);
 
 			results.push(result);
+			if (result.authenticationFailed) {
+				const pending = codes.slice(index).filter(entry => !redeemedCodes.includes(entry.code));
+				for (const entry of this.takeUnnotifiedPausedCodes(account, pending)) {
+					results.push({ code: entry.code, rewards: Array.isArray(entry.rewards) ? entry.rewards : [], success: false, paused: true });
+				}
+				break;
+			}
+
+			if (result.success || !result.retryable) {
+				PropertiesService.getScriptProperties().deleteProperty(this.getPausedCodesKey(account));
+			}
 
 			// Only stop retrying a code once we know the outcome is final. Transient
 			// failures (bad cookie, cooldown, network errors) are left unsaved so the
 			// next run picks them up again.
 			if (!result.retryable) {
-				this.saveRedeemedCode(code.code);
+				this.saveRedeemedCode(code.code, account);
 			}
 		}
 
@@ -461,12 +579,16 @@ class Game {
 		const results = [];
 
 		for (const code of codes) {
-			console.log(`Attempting to redeem code ${code.code} for ${this.fullName}`);
-			results.push(await this.redeemCode(account, code));
+			console.log(t `Attempting to redeem code ${code.code} for ${this.getAccountLabel(account)}`);
+			const result = await this.redeemCode(account, code);
+			results.push(result);
 			Utilities.sleep(6000);
+			if (result.authenticationFailed) {
+				break;
+			}
 		}
 
-		console.log(`Completed forced code redemption for ${this.fullName}`);
+		console.log(t `Completed forced code redemption for ${this.getAccountLabel(account)}`);
 		return results;
 	}
 
@@ -483,12 +605,13 @@ class Game {
 			case "genshin": return "genshin";
 			case "starrail": return "starrail";
 			case "zenless": return "zenless";
-			default: throw new Error(`Unknown game: ${this.name}`);
+			default: throw new Error(t `Unknown game: ${this.name}`);
 		}
 	}
 
 	async redeemCode (account, codeEntry) {
 		const code = typeof codeEntry === "string" ? codeEntry : codeEntry.code;
+		const target = this.getAccountLabel(account);
 		const rewards = (typeof codeEntry === "object" && Array.isArray(codeEntry.rewards))
 			? codeEntry.rewards
 			: [];
@@ -508,47 +631,53 @@ class Game {
 			const statusCode = response.getResponseCode();
 
 			if (statusCode !== 200) {
-				console.error(`Code ${code} redemption for ${this.fullName} returned status ${statusCode}`);
+				console.error(t `Code ${code} redemption for ${target} returned status ${statusCode}`);
 				return {
 					code,
 					rewards,
 					success: false,
 					retryable: true,
-					message: `Request failed with status ${statusCode}`
+					message: t `Request failed with status ${statusCode}`
 				};
 			}
 
 			const data = JSON.parse(response.getContentText());
 
+			const authenticationFailed = isAuthenticationError(data);
+			if (authenticationFailed || [0, -2006, -2017].includes(data.retcode)) {
+				updateAuthenticationAlert(this, account.cookie, "code redemption", authenticationFailed);
+			}
+
 			// Check for authentication errors and other failures
 			if (data.retcode !== 0) {
 				if (data.retcode === -1071) {
-					console.error(`Authentication error for code ${code} in ${this.fullName}: ${data.message}. Try logging in via incognito mode and get a fresh cookie from there.`);
+					console.error(t `Authentication error for code ${code} in ${target}: ${data.message}. Try logging in via incognito mode and get a fresh cookie from there.`);
 				}
 				else {
-					console.error(`Code ${code} redemption failed for ${this.fullName}:`, data);
+					console.error(t `Code ${code} redemption failed for ${target}:`, data);
 				}
 
 				return {
 					code,
 					rewards,
 					success: false,
-					retryable: RETRYABLE_REDEEM_RETCODES.includes(data.retcode),
-					message: REDEEM_ERROR_MESSAGES[data.retcode] || data.message || `Unknown error (retcode ${data.retcode})`
+					authenticationFailed,
+					retryable: authenticationFailed || RETRYABLE_REDEEM_RETCODES.includes(data.retcode),
+					message: (REDEEM_ERROR_MESSAGES[data.retcode] && t(REDEEM_ERROR_MESSAGES[data.retcode])) || data.message || t `Unknown error (retcode ${data.retcode})`
 				};
 			}
 
-			console.log(`Code ${code} successfully redeemed for ${this.fullName}:`, data);
+			console.log(t `Code ${code} successfully redeemed for ${target}:`, data);
 			return {
 				code,
 				rewards,
 				success: true,
 				retryable: false,
-				message: "Code redeemed successfully!"
+				message: t("Code redeemed successfully!")
 			};
 		}
 		catch (e) {
-			console.error(`Error redeeming code ${code} for ${this.fullName}:`, e);
+			console.error(t `Error redeeming code ${code} for ${target}:`, e);
 			return {
 				code,
 				rewards,
@@ -609,12 +738,12 @@ class Game {
 
 		const gameMapping = regionMappings[this.name];
 		if (!gameMapping) {
-			throw new Error(`Unknown game: ${this.name}`);
+			throw new Error(t `Unknown game: ${this.name}`);
 		}
 
 		const internalRegion = gameMapping[region];
 		if (!internalRegion) {
-			throw new Error(`Unknown region ${region} for game ${this.name}`);
+			throw new Error(t `Unknown region ${region} for game ${this.name}`);
 		}
 
 		return internalRegion;
@@ -625,7 +754,7 @@ class Game {
 			case "genshin": return "https://sg-hk4e-api.hoyoverse.com/common/apicdkey/api/webExchangeCdkey";
 			case "starrail": return "https://sg-hkrpg-api.hoyoverse.com/common/apicdkey/api/webExchangeCdkeyRisk";
 			case "zenless": return "https://public-operation-nap.hoyoverse.com/common/apicdkey/api/webExchangeCdkey";
-			default: throw new Error(`Unknown game: ${this.name}`);
+			default: throw new Error(t `Unknown game: ${this.name}`);
 		}
 	}
 
@@ -633,15 +762,33 @@ class Game {
 		return REDEMPTION_LINKS[this.name] || null;
 	}
 
-	getRedeemedCodes () {
-		const redeemedCodes = PropertiesService.getScriptProperties().getProperty(`${this.name}_redeemed_codes`);
+	getPausedCodesKey (account) {
+		return `${this.name}_${account.region}_${account.uid}_paused_codes`;
+	}
+
+	takeUnnotifiedPausedCodes (account, codes) {
+		const properties = PropertiesService.getScriptProperties();
+		const key = this.getPausedCodesKey(account);
+		const fingerprint = getCookieFingerprint(account.cookie);
+		const saved = JSON.parse(properties.getProperty(key) || "null");
+		const notified = saved?.fingerprint === fingerprint ? saved.codes : [];
+		const fresh = codes.filter(entry => !notified.includes(entry.code));
+		if (fresh.length > 0) {
+			const codesToSave = [...notified, ...fresh.map(entry => entry.code)];
+			properties.setProperty(key, JSON.stringify({ fingerprint, codes: codesToSave }));
+		}
+		return fresh;
+	}
+
+	getRedeemedCodes (account) {
+		const redeemedCodes = PropertiesService.getScriptProperties().getProperty(`${this.name}_${account.region}_${account.uid}_redeemed_codes`);
 		return redeemedCodes ? JSON.parse(redeemedCodes) : [];
 	}
 
-	saveRedeemedCode (code) {
-		const redeemedCodes = this.getRedeemedCodes();
+	saveRedeemedCode (code, account) {
+		const redeemedCodes = this.getRedeemedCodes(account);
 		redeemedCodes.push(code);
-		PropertiesService.getScriptProperties().setProperty(`${this.name}_redeemed_codes`, JSON.stringify(redeemedCodes));
+		PropertiesService.getScriptProperties().setProperty(`${this.name}_${account.region}_${account.uid}_redeemed_codes`, JSON.stringify(redeemedCodes));
 	}
 
 	delay (ms) {
@@ -661,27 +808,27 @@ function checkInGame (gameName) {
 
 	return game.checkAndExecute()
 		.then(async (successes) => {
-			console.log(`Successful check-ins for ${gameName}:`, successes);
+			console.log(t `Successful check-ins for ${gameName}: ${successes.length}`);
 
 			const redeemReports = [];
 
 			// Only attempt code redemption if enabled in config
 			if (config.enableCodeRedemption) {
-				for (const success of successes) {
+				for (const account of game.redemptionAccounts) {
 					if (gameName === "honkai") {
 						continue;
 					}
 
-					const results = await game.redeemCodes(success.account);
+					const results = await game.redeemCodes(account);
 					redeemReports.push({
-						account: success.account,
-						assets: success.assets,
+						account,
+						assets: game.config.assets,
 						results
 					});
 				}
 			}
 			else {
-				console.log(`Code redemption is disabled in config for ${gameName}`);
+				console.log(t `Code redemption is disabled in config for ${gameName}`);
 			}
 
 			if (DISCORD_WEBHOOK) {
@@ -696,7 +843,7 @@ function checkInGame (gameName) {
 			return successes;
 		})
 		.catch((e) => {
-			console.error(`An error occurred during ${gameName} check-in:`, e);
+			console.error(t `An error occurred during ${gameName} check-in:`, e);
 			throw e;
 		});
 }
@@ -708,14 +855,14 @@ function buildCheckInEmbed (success) {
 
 	return {
 		color: 16748258,
-		title: `${success.assets.game} Daily Check-In`,
+		title: t `${success.assets.game} Daily Check-In`,
 		author: {
 			name: `${success.account.uid} - ${success.account.nickname}`,
 			icon_url: success.assets.icon
 		},
 		fields: [
 			{
-				name: "Nickname",
+				name: t("Nickname"),
 				value: success.account.nickname,
 				inline: true
 			},
@@ -725,27 +872,27 @@ function buildCheckInEmbed (success) {
 				inline: true
 			},
 			{
-				name: "Rank",
+				name: t("Rank"),
 				value: success.account.rank,
 				inline: true
 			},
 			{
-				name: "Region",
+				name: t("Region"),
 				value: success.account.region,
 				inline: true
 			},
 			{
-				name: "Today's Reward",
+				name: t("Today's Reward"),
 				value: `${success.award.name} x${success.award.count}`,
 				inline: true
 			},
 			{
-				name: "Total Check-Ins",
+				name: t("Total Check-Ins"),
 				value: success.total,
 				inline: true
 			},
 			{
-				name: "Result",
+				name: t("Result"),
 				value: success.result,
 				inline: false
 			}
@@ -755,7 +902,7 @@ function buildCheckInEmbed (success) {
 		},
 		timestamp: new Date(),
 		footer: {
-			text: `${success.assets.game} Daily Check-In`
+			text: t `${success.assets.game} Daily Check-In`
 		}
 	};
 }
@@ -828,16 +975,16 @@ function postDiscordPayload (payload) {
 		}
 
 		if (statusCode !== 429) {
-			console.error("Discord webhook failed", statusCode, response.getContentText());
+			console.error(t("Discord webhook failed"), statusCode, response.getContentText());
 			return false;
 		}
 
 		const wait = getRetryAfterMs(response, attempt);
-		console.warn(`Discord rate limited (attempt ${attempt + 1}/${DISCORD_MAX_RETRIES}), waiting ${wait}ms`);
+		console.warn(t `Discord rate limited (attempt ${attempt + 1}/${DISCORD_MAX_RETRIES}), waiting ${wait}ms`);
 		Utilities.sleep(wait);
 	}
 
-	console.error("Discord webhook gave up after repeated 429 responses.");
+	console.error(t("Discord webhook gave up after repeated 429 responses."));
 	return false;
 }
 
@@ -887,7 +1034,7 @@ function formatCodeLines (entries, formatter) {
 
 	for (const entry of entries) {
 		const line = formatter(entry);
-		const suffix = `\n…and ${entries.length - lines.length} more`;
+		const suffix = t `\n…and ${entries.length - lines.length} more`;
 
 		if (used + line.length + 1 > FIELD_LIMIT - suffix.length) {
 			lines.push(suffix.trim());
@@ -911,10 +1058,11 @@ function buildCodeRedeemEmbed (game, account, assets, results) {
 	}
 
 	const redeemed = results.filter(result => result.success);
-	const failed = config.notifyOnRedeemFailure ? results.filter(result => !result.success) : [];
+	const failed = config.notifyOnRedeemFailure ? results.filter(result => !result.success && !result.authenticationFailed && !result.paused) : [];
+	const paused = results.filter(result => result.paused);
 
 	// Nothing new happened for this account - stay quiet rather than sending an empty report.
-	if (redeemed.length === 0 && failed.length === 0) {
+	if (redeemed.length === 0 && failed.length === 0 && paused.length === 0) {
 		return null;
 	}
 
@@ -922,7 +1070,7 @@ function buildCodeRedeemEmbed (game, account, assets, results) {
 
 	if (redeemed.length > 0) {
 		fields.push({
-			name: `Redeemed (${redeemed.length})`,
+			name: t `Redeemed (${redeemed.length})`,
 			value: formatCodeLines(redeemed, (result) => (result.rewards.length > 0
 				? `\`${result.code}\` — ${truncate(result.rewards.join(", "), 200)}`
 				: `\`${result.code}\``)),
@@ -931,26 +1079,35 @@ function buildCodeRedeemEmbed (game, account, assets, results) {
 	}
 
 	if (failed.length > 0) {
-		const redeemLink = game.getRedemptionLink();
-
 		fields.push({
-			name: `Failed (${failed.length})`,
+			name: t `Failed (${failed.length})`,
 			value: formatCodeLines(failed, result => `\`${result.code}\` — ${truncate(result.message, 150)}`),
 			inline: false
 		});
+	}
 
-		if (redeemLink) {
-			fields.push({
-				name: "Manually Redeem Here",
-				value: redeemLink,
-				inline: false
-			});
-		}
+	if (paused.length > 0) {
+		fields.push({
+			name: t("Code Redemption Paused - HoYoLAB Login Expired"),
+			value: formatCodeLines(paused, (result) => (result.rewards.length > 0
+				? `\`${result.code}\` — ${truncate(result.rewards.join(", "), 200)}`
+				: `\`${result.code}\``)),
+			inline: false
+		});
+	}
+
+	const redeemLink = game.getRedemptionLink();
+	if (redeemLink && (failed.length > 0 || paused.length > 0)) {
+		fields.push({
+			name: t("Manually Redeem Here"),
+			value: redeemLink,
+			inline: false
+		});
 	}
 
 	return {
 		color: 5793266,
-		title: `${assets.game} Code Redemption`,
+		title: t `${assets.game} Code Redemption`,
 		author: {
 			name: `${account.uid} - ${account.nickname}`,
 			icon_url: assets.icon
@@ -958,9 +1115,42 @@ function buildCodeRedeemEmbed (game, account, assets, results) {
 		fields,
 		timestamp: new Date(),
 		footer: {
-			text: `${assets.game} Code Redemption`
+			text: t `${assets.game} Code Redemption`
 		}
 	};
+}
+
+// Read-only activity; this does not refresh tokens or guarantee a longer session.
+async function keepAliveCookies () {
+	for (const gameName of ["genshin", "honkai", "starrail", "zenless"]) {
+		const accounts = config[gameName]?.data || [];
+		if (accounts.length === 0) {
+			continue;
+		}
+		const game = new Game(gameName, config[gameName]);
+		for (const cookie of new Set(accounts)) {
+			const result = await game.getSignInfo(cookie);
+			if (result.success) {
+				updateAuthenticationAlert(game, cookie, "check-in", false);
+			}
+		}
+	}
+}
+
+// Run once from the editor to install or replace your keep-alive trigger.
+function setupCookieKeepAlive () {
+	removeCookieKeepAlive();
+	ScriptApp.newTrigger("keepAliveCookies").timeBased().everyHours(6)
+		.create();
+	console.log("Cookie keep-alive scheduled every six hours.");
+}
+
+function removeCookieKeepAlive () {
+	for (const trigger of ScriptApp.getProjectTriggers()) {
+		if (trigger.getHandlerFunction() === "keepAliveCookies") {
+			ScriptApp.deleteTrigger(trigger);
+		}
+	}
 }
 
 function checkInAllGames () {
@@ -968,11 +1158,11 @@ function checkInAllGames () {
 
 	return Promise.all(games.map(checkInGame))
 		.then((results) => {
-			console.log("All games checked in successfully");
+			console.log(t("All games checked in successfully"));
 			return results.flat();
 		})
 		.catch((e) => {
-			console.error("Error during check-in process:", e);
+			console.error(t("Error during check-in process:"), e);
 		});
 }
 
@@ -980,37 +1170,37 @@ function manuallyRedeemCodes (gameName, forceRedeem = false) {
 	if (![
 		"genshin", "honkai", "starrail", "zenless"
 	].includes(gameName)) {
-		console.error(`Invalid game name: ${gameName}. Must be one of: genshin, honkai, starrail, zenless`);
-		return Promise.reject(new Error(`Invalid game name: ${gameName}`));
+		console.error(t `Invalid game name: ${gameName}. Must be one of: genshin, honkai, starrail, zenless`);
+		return Promise.reject(new Error(t `Invalid game name: ${gameName}`));
 	}
 
 	if (gameName === "honkai") {
-		console.warn("Code redemption is not supported for Honkai Impact 3rd");
-		return Promise.resolve({ success: false, message: "Code redemption is not supported for Honkai Impact 3rd" });
+		console.warn(t("Code redemption is not supported for Honkai Impact 3rd"));
+		return Promise.resolve({ success: false, message: t("Code redemption is not supported for Honkai Impact 3rd") });
 	}
 
 	// Check if code redemption is enabled (can be bypassed with forceRedeem)
 	if (!config.enableCodeRedemption && !forceRedeem) {
-		console.warn(`Code redemption is disabled in config for ${gameName}. Use forceRedeem=true to bypass.`);
-		return Promise.resolve({ success: false, message: "Code redemption is disabled in config" });
+		console.warn(t `Code redemption is disabled in config for ${gameName}. Use forceRedeem=true to bypass.`);
+		return Promise.resolve({ success: false, message: t("Code redemption is disabled in config") });
 	}
 
 	const game = new Game(gameName, config[gameName]);
 	const accounts = config[gameName].data;
 
 	if (accounts.length === 0) {
-		console.warn(`No ${gameName} accounts provided. Cannot redeem codes.`);
-		return Promise.resolve({ success: false, message: `No ${gameName} accounts provided` });
+		console.warn(t `No ${gameName} accounts provided. Cannot redeem codes.`);
+		return Promise.resolve({ success: false, message: t `No ${gameName} accounts provided` });
 	}
 
 	const embeds = [];
-	return Promise.all(accounts.map(async (cookieData) => {
+	const redeemForAccount = async (cookieData) => {
 		try {
 			const ltuid = cookieData.match(/ltuid(?:|_v2)=([^;]+)/)[1];
 			const accountDetails = await game.getAccountDetails(cookieData, ltuid);
 
 			if (!accountDetails) {
-				return { success: false, message: `Failed to get account details for ${gameName}` };
+				return { success: false, message: t `Failed to get account details for ${gameName}` };
 			}
 
 			const account = {
@@ -1021,7 +1211,7 @@ function manuallyRedeemCodes (gameName, forceRedeem = false) {
 				cookie: cookieData
 			};
 
-			console.log(`Redeeming codes for ${gameName} account: ${account.nickname} (${account.uid})`);
+			console.log(t `Redeeming codes for ${gameName} account: ${account.nickname} (${account.uid})`);
 
 			const results = forceRedeem
 				? await game.forceRedeemCodes(account)
@@ -1033,19 +1223,25 @@ function manuallyRedeemCodes (gameName, forceRedeem = false) {
 			}
 
 			const message = forceRedeem
-				? `Force redeemed all codes for ${account.nickname} (${account.uid})`
-				: `Redeemed new codes for ${account.nickname} (${account.uid})`;
+				? t `Force redeemed all codes for ${account.nickname} (${account.uid})`
+				: t `Redeemed new codes for ${account.nickname} (${account.uid})`;
 
 			return { success: true, account, results, message };
 		}
 		catch (e) {
-			console.error(`Error redeeming codes for ${gameName}:`, e);
+			console.error(t `Error redeeming codes for ${gameName}:`, e);
 			return { success: false, message: e.message };
 		}
-	})).then((results) => {
+	};
+
+	return (async () => {
+		const results = [];
+		for (const cookieData of accounts) {
+			results.push(await redeemForAccount(cookieData));
+		}
 		postDiscordEmbeds(embeds, game.config.assets);
 		return results;
-	});
+	})();
 }
 
 function redeemGenshinCodes () {
@@ -1058,4 +1254,16 @@ function redeemStarRailCodes () {
 
 function redeemZenlessCodes () {
 	return manuallyRedeemCodes("zenless", false);
+}
+
+// Uses the same catalog and formatter as the Node.js application and setup page.
+function t (message, ...values) {
+	// Keep the original single-file English setup working without optional catalogs.
+	if (typeof HoyoLabI18n === "undefined") {
+		return Array.isArray(message)
+			? message.reduce((text, part, index) => text + (index ? String(values[index - 1]) : "") + part, "")
+			: message;
+	}
+	HoyoLabI18n.setLanguage(config.language);
+	return HoyoLabI18n.t(message, ...values);
 }

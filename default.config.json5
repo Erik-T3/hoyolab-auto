@@ -1,6 +1,6 @@
 {
     loglevel: 'info',
-    language: 'en-us', // HoYoLAB locale (lowercase)
+    language: 'en-us', // Software and HoYoLAB language (lowercase)
     userAgent: 'Custom fork of HoyoLabAuto: github.com/torikushiii/hoyolab-auto',
     retry: {
         attempts: 0, // Number of retries for API calls (0 disables retries)
@@ -10,6 +10,10 @@
     // Test notification settings
     testNotification: {
         enabled: false, // Set to false if you don't want to receive test notifications on startup
+    },
+    notifications: {
+        // 'all' = notify every check-in result, 'failures' = only notify when a check-in fails, 'none' = never notify
+        checkIn: 'all',
     },
     platforms: [
         {
@@ -33,18 +37,35 @@
             type: 'webhook',
             url: '(YOUR_WEBHOOK_URL)', // You can follow this guide to create a webhook: https://github.com/torikushiii/hoyolab-auto/blob/main/setup/DISCORD_WEBHOOK.md
         },
+        {
+            id: 4,
+            active: false, // Set to true to receive Gotify notifications
+            type: 'gotify',
+            url: 'https://gotify.example.com', // Your Gotify server URL, including any reverse proxy path
+            token: '(YOUR_GOTIFY_APP_TOKEN)', // Create an application in the Gotify web UI to get this token
+            priority: 5, // Optional integer priority (default: 5)
+            // Optional per-notification priorities, see setup/GOTIFY.md for all types
+            // priorities: {
+            //     stamina: 7,
+            //     mimo: 2,
+            // },
+        },
     ],
     crons: {
         whitelist: [], // You can whitelist some crons if you only want to run specific crons
         blacklist: [], // You can blacklist some crons if you don't want to run them
         // You can use this site to generate cron expression: https://crontab.guru/
         checkIn: '0 0 0 * * *',
+        // Set to 'UTC' to keep check-in fixed to GMT year-round.
+        // checkInTimeZone: 'UTC',
         codeRedeem: '*/15 * * * *',
         dailiesReminderHour: 21, // Game server time (0-23)
         dailiesReminderMinute: 0, // 0-59
         dailiesReminderTimeZone: null, // Optional IANA timezone, e.g. 'America/New_York'; null uses game server time
         expedition: '0 */30 * * * *',
+        giftCodeRedeem: '0 */3 * * *',
         mimo: '0 0 */6 * * *',
+        mimoRestock: true, // Also run at 19:00 and 19:01 UTC+8 on Monday (Star Rail) / Wednesday (ZZZ).
         mimoJitter: 0, // Random delay in seconds before running Mimo (0-N). Helps avoid rate limits at reset time.
         hilichurl: '0 0 11 * * *', // 11:00 AM local time (adjust for your timezone if event resets at a different time)
         hilichurlJitter: 0, // Random delay in seconds before running Hilichurl Workshop (0-N).
@@ -53,6 +74,11 @@
         shopStatus: '0 */1 * * *',
         stamina: '0 */30 * * * *'
     },
+    // Optional: define a cookie once and reuse it in any account entry below with cookieKey: 'main'.
+    // A cookie set directly on an entry always takes priority over its cookieKey.
+    // cookies: {
+    //     main: '',
+    // },
     accounts: [
         {
             id: 1,
@@ -151,10 +177,18 @@
                     },
                     mimo: {
                         check: false,
+                        // All shop rewards are once per season; weekly restocks replenish shared stock.
+                        // always: exchange as soon as affordable; conditional: exchange without spending the always reserve.
+                        // Both modes reserve points before lottery draws; never: skip. Array order sets category priority.
+                        shopPolicy: [
+                            { category: 'premiumCurrency', mode: 'always' },
+                            { category: 'gameMaterials', mode: 'conditional' },
+                            { category: 'hoyolabCosmetics', mode: 'never' },
+                        ],
                         redeem: true,
                         mentionOnSuccess: true, // Ping Discord after a successful Mimo exchange or code redemption
-                        lottery: false,
-                        reservePoints: 0,
+                        lottery: false, // Use each day's available draws to spend points above the remaining shop budget.
+                        reservePoints: 0, // Minimum points kept from lottery spending; guaranteed exchanges can use them.
                         redeemDraw: true,
                     },
                     discord: {
@@ -188,10 +222,15 @@
                     },
                     mimo: {
                         check: false,
+                        shopPolicy: [
+                            { category: 'premiumCurrency', mode: 'always' },
+                            { category: 'gameMaterials', mode: 'conditional' },
+                            { category: 'hoyolabCosmetics', mode: 'never' },
+                        ],
                         redeem: true,
                         mentionOnSuccess: true, // Ping Discord after a successful Mimo exchange or code redemption
                         lottery: false,
-                        reservePoints: 0,
+                        reservePoints: 0, // Minimum points kept from lottery spending; guaranteed exchanges can use them.
                         redeemDraw: true,
                     },
                     discord: {
@@ -218,10 +257,15 @@
                     dailyLotteryCheck: true, // Set to false to disable the ZZZ daily lottery reminder
                     mimo: {
                         check: false,
+                        shopPolicy: [
+                            { category: 'premiumCurrency', mode: 'always' },
+                            { category: 'gameMaterials', mode: 'conditional' },
+                            { category: 'hoyolabCosmetics', mode: 'never' },
+                        ],
                         redeem: true,
                         mentionOnSuccess: true, // Ping Discord after a successful Mimo exchange or code redemption
                         lottery: false,
-                        reservePoints: 0,
+                        reservePoints: 0, // Minimum points kept from lottery spending; guaranteed exchanges can use them.
                         redeemDraw: true,
                     },
                     stamina: {

@@ -28,11 +28,13 @@
    - Create a new project by clicking "+ New Project".
 
 2. **Paste the Code:**
+   - For localized messages, add two script files to the same project: paste [the desired language catalog](../../localization/README.md) into a new `.gs` file and [the shared formatter](../../localization/index.js) into `Localization.gs`.
    - Replace any existing code in the script editor with the provided Apps Script code. It should look like this:
 
      ![image](https://github.com/torikushiii/hoyolab-auto/assets/21153445/4a0a5a30-c990-41f2-802e-1ba6f45c0c43)
 
 3. **Configuration:**
+   - Set `config.language` to a locale matching the catalog, such as `"it-it"` for Italian, or leave `"en-us"` for English. Missing catalogs and messages fall back to English. This Apps Script setting only localizes software messages; its API requests remain unchanged.
    - **Paste your `cookie`:** In the config object, add the following (replace placeholders with your actual data):
 
      ```javascript
@@ -67,7 +69,7 @@
      const DISCORD_WEBHOOK = "https://discord.com/api/webhooks/...";
      ```
 
-   - **Automatic code redemption (optional):** Set `enableCodeRedemption` to `true` to redeem new codes after checking in. Not supported for Honkai Impact 3rd.
+   - **Automatic code redemption (optional):** Set `enableCodeRedemption` to `true` to redeem new codes on each scheduled run, including when the account has already checked in that day. Not supported for Honkai Impact 3rd.
 
      ```javascript
      const config = {
@@ -78,6 +80,12 @@
      ```
 
      When `DISCORD_WEBHOOK` is set, one summary message is sent per account listing the codes that were redeemed and the rewards they granted. Nothing is sent when there are no new codes. Turn on `notifyOnRedeemFailure` if you also want to hear about codes that failed - this includes a link to redeem them manually. Codes that fail for a temporary reason (expired cookie, redemption cooldown, network errors) are retried on the next run; expired, invalid, and already-used codes are not.
+
+     Authentication failures send a separate Discord alert even when `notifyOnRedeemFailure` is `false`. Check-in and redemption failures are deduplicated per game and HoYoLAB account across runs. A failed delivery is retried; another alert is allowed after the cookie changes or all reported authentication failures recover. Alerts show the HoYoLAB ID, plus the game UID, nickname, and region once the account has been looked up successfully at least once. After a redemption login error, remaining codes for that account wait until the next run. Other accounts continue normally.
+
+     Check-in and redemption use different tokens, so successful check-in does not prove that redemption credentials are valid. Replace the affected account's cookie when alerted. This Apps Script does not refresh cookies using `stoken`.
+
+     Redeemed codes are now tracked per game account. When updating from a version with shared code history, current codes may be attempted once again for each account because the old history cannot identify which account redeemed them.
 
    - **Save the Project:** Click on the floppy disk icon to save your project.
 
@@ -103,6 +111,16 @@
    - Run the script once manually by clicking the play button in the Apps Script editor to authorize the script.
 
      ![image](https://github.com/torikushiii/hoyolab-auto/assets/21153445/8378f2b9-2532-4e37-8cf7-394bee0f41c3)
+
+### Optional six-hour cookie keep-alive
+
+Run `setupCookieKeepAlive` once from the Apps Script editor and authorize it if prompted. This creates a separate trigger that runs `keepAliveCookies` every six hours. Running setup again replaces your existing keep-alive trigger. Your daily check-in trigger stays as configured.
+
+Each run reads the check-in status for each configured game/account without checking in or redeeming codes. Successful requests send no Discord messages; authentication failures use the existing deduplicated alerts. A successful keep-alive does not clear a code-redemption authentication failure.
+
+This is experimental: periodic requests have not been verified to extend cookie lifetime or prevent CAPTCHA. It does not refresh tokens using `stoken`, save replacement cookies, or restore expired sessions. Expired cookies still need replacing.
+
+To stop it, run `removeCookieKeepAlive` from the editor. Trigger setup and removal apply to triggers created by your Google account.
 
 ### Important Notes
 

@@ -1,12 +1,14 @@
+const { t } = require("../../localization/index.js");
+
 module.exports = {
 	name: "stamina",
 	expression: "0 */30 * * * *",
-	description: "Check for your stamina and notify you when it's within the set threshold.",
+	description: t("Check for your stamina and notify you when it's within the set threshold."),
 	code: (async function stamina () {
 		// eslint-disable-next-line object-curly-spacing
 		const accountsList = app.HoyoLab.getActiveAccounts({ blacklist: ["honkai", "tot"] });
 		if (accountsList.length === 0) {
-			app.Logger.warn("Cron:Stamina", "No active accounts found to run stamina check for.");
+			app.Logger.warn("Cron:Stamina", t("No active accounts found to run stamina check for."));
 			return;
 		}
 
@@ -48,13 +50,13 @@ module.exports = {
 				platform.update(account);
 
 				const description = (stamina.currentStamina === stamina.maxStamina)
-					? "Your stamina is full!"
-					: "Your stamina is within the set threshold!";
+					? t("Your stamina is full!")
+					: t("Your stamina is within the set threshold!");
 
 				const platforms = app.Platform.getForAccount(account);
 				const embed = {
 					color: data.assets.color,
-					title: "Stamina Reminder",
+					title: t("Stamina Reminder"),
 					author: {
 						name: data.assets.author,
 						icon_url: data.assets.logo
@@ -62,34 +64,35 @@ module.exports = {
 					description,
 					fields: [
 						{ name: "UID", value: account.uid, inline: true },
-						{ name: "Username", value: account.nickname, inline: true },
-						{ name: "Region", value: app.HoyoLab.getRegion(account.region), inline: true },
-						{ name: "Stamina", value: `${current}/${max}`, inline: true },
-						{ name: "Recovery Time", value: delta, inline: true }
+						{ name: t("Username"), value: account.nickname, inline: true },
+						{ name: t("Region"), value: app.HoyoLab.getRegion(account.region), inline: true },
+						{ name: t("Stamina"), value: `${current}/${max}`, inline: true },
+						{ name: t("Recovery Time"), value: delta, inline: true }
 					],
 					timestamp: new Date(),
 					footer: {
-						text: "Stamina Reminder",
+						text: t("Stamina Reminder"),
 						icon_url: data.assets.logo
 					}
 				};
 
-				for (const webhook of platforms.filter(p => p.name === "webhook")) {
-					const userId = webhook.createUserMention(account.discord);
-					await webhook.send(embed, {
+				for (const destination of app.Platform.getEmbedPlatforms(platforms)) {
+					const userId = destination.createUserMention(account.discord);
+					await destination.send(embed, {
 						content: userId,
 						author: data.assets.author,
-						icon: data.assets.logo
+						icon: data.assets.logo,
+						notificationType: "stamina"
 					});
 				}
 
 				const messageText = [
-					`📢 Stamina Reminder, ${description}`,
-					`🎮 **Game**: ${data.assets.game}`,
-					`🆔 **UID**: ${account.uid} ${account.nickname}`,
-					`🌍 **Region**: ${app.HoyoLab.getRegion(account.region)}`,
-					`🔋 **Stamina**: ${current}/${max}`,
-					`🕒 **Recovery Time**: ${delta}`
+					t `📢 Stamina Reminder, ${description}`,
+					t `🎮 **Game**: ${data.assets.game}`,
+					t `🆔 **UID**: ${account.uid} ${account.nickname}`,
+					t `🌍 **Region**: ${app.HoyoLab.getRegion(account.region)}`,
+					t `🔋 **Stamina**: ${current}/${max}`,
+					t `🕒 **Recovery Time**: ${delta}`
 				].join("\n");
 
 				const escapedMessage = app.Utils.escapeCharacters(messageText);

@@ -1,3 +1,6 @@
+const { t } = require("../../localization/index.js");
+const redemptionRequest = require("../../hoyolab-modules/redemption-request.js");
+
 let version;
 
 const fetchData = async () => {
@@ -33,7 +36,7 @@ const fetchData = async () => {
 	const codes = res.body.active;
 	if (!Array.isArray(codes)) {
 		app.Logger.debug("StarRailAPI", {
-			message: "API returned malformed data",
+			message: t("API returned malformed data"),
 			body: res.body
 		});
 
@@ -52,7 +55,7 @@ const redeemCodes = async (accountData, code) => {
 		whitelist: ["cookie_token_v2", "account_mid_v2", "account_id_v2", "cookie_token", "account_id"]
 	});
 
-	const res = await app.Got("HoYoLab", {
+	const res = await redemptionRequest({
 		url: "https://sg-hkrpg-api.hoyoverse.com/common/apicdkey/api/webExchangeCdkeyRisk",
 		method: "POST",
 		searchParams: {
@@ -68,7 +71,7 @@ const redeemCodes = async (accountData, code) => {
 
 	if (res.statusCode !== 200) {
 		throw new app.Error({
-			message: "API returned non-200 status code",
+			message: t("API returned non-200 status code"),
 			args: {
 				statusCode: res.statusCode,
 				body: res.body
@@ -80,12 +83,12 @@ const redeemCodes = async (accountData, code) => {
 	if (retcode === -2001 || retcode === -2003) {
 		app.Logger.log(`CodeRedeem:StarRail:${accountData.uid}`, {
 			code: code.code,
-			message: "Expired or invalid code"
+			message: t("Expired or invalid code")
 		});
 
 		return {
 			success: false,
-			reason: "Expired or invalid code",
+			reason: t("Expired or invalid code"),
 			retcode
 		};
 	}
@@ -99,7 +102,7 @@ const redeemCodes = async (accountData, code) => {
 		};
 	}
 
-	app.Logger.info(`CodeRedeem:StarRail:${accountData.uid}`, `${code.code} - Redeemed`);
+	app.Logger.info(`CodeRedeem:StarRail:${accountData.uid}`, t `${code.code} - Redeemed`);
 	return {
 		success: true
 	};

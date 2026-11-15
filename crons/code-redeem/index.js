@@ -1,3 +1,5 @@
+const { t } = require("../../localization/index.js");
+
 const {
 	fetchCodes,
 	checkAndRedeem,
@@ -7,18 +9,18 @@ const {
 module.exports = {
 	name: "code-redeem",
 	expression: "* * * * *",
-	description: "Check and redeem codes for supported games from HoyoLab.",
+	description: t("Check and redeem codes for supported games from HoyoLab."),
 	code: async function codeRedeem () {
 		const accountData = app.HoyoLab.getActiveAccounts();
 
 		if (accountData.length === 0) {
-			app.Logger.info("No active accounts found");
+			app.Logger.info(t("No active accounts found"));
 			return;
 		}
 
 		const redeemDisabled = accountData.every((i) => i.redeemCode === false);
 		if (redeemDisabled) {
-			app.Logger.info("CodeRedeem", "All accounts have redeem disabled");
+			app.Logger.info("CodeRedeem", t("All accounts have redeem disabled"));
 
 			return;
 		}
@@ -26,10 +28,8 @@ module.exports = {
 		const codes = await fetchCodes();
 		if (Object.values(codes).every((i) => i.length === 0)) {
 			app.Logger.debug("CodeRedeem", {
-				message: "No codes found"
+				message: t("No codes found")
 			});
-
-			return;
 		}
 
 		const result = await checkAndRedeem(codes);
@@ -50,8 +50,8 @@ module.exports = {
 			for (const telegram of platforms.filter(p => p.name === "telegram")) {
 				await telegram.send(escapedMessage);
 			}
-			for (const webhook of platforms.filter(p => p.name === "webhook")) {
-				await webhook.send(message.embed);
+			for (const destination of app.Platform.getEmbedPlatforms(platforms)) {
+				await destination.send(message.embed, { notificationType: "codeRedeem" });
 			}
 		}
 
@@ -61,7 +61,7 @@ module.exports = {
 			const escapedMessage = app.Utils.escapeCharacters(message.telegram);
 
 			const notified = new Set(await app.Cache.get(data.notificationKey) ?? []);
-			for (const platform of platforms.filter(p => p.name === "telegram" || p.name === "webhook")) {
+			for (const platform of platforms.filter(p => ["telegram", "webhook", "gotify"].includes(p.name))) {
 				if (notified.has(platform.id)) {
 					continue;
 				}
@@ -70,8 +70,11 @@ module.exports = {
 						await platform.send(escapedMessage);
 					}
 					else {
-						const userId = data.retcode === -2017 ? null : platform.createUserMention(data.account.discord);
-						await platform.send(message.embed, { content: userId });
+						const userId = [-2006, -2017].includes(data.retcode) ? null : platform.createUserMention(data.account.discord);
+						await platform.send(message.embed, {
+							content: userId,
+							notificationType: data.loginExpired ? "cookie" : "codeRedeem"
+						});
 					}
 					notified.add(platform.id);
 					await app.Cache.set({
@@ -93,8 +96,8 @@ module.exports = {
 			for (const telegram of app.Platform.list.filter(p => p.name === "telegram")) {
 				await telegram.send(escapedMessage);
 			}
-			for (const webhook of app.Platform.list.filter(p => p.name === "webhook")) {
-				await webhook.send(message.embed);
+			for (const destination of app.Platform.getEmbedPlatforms()) {
+				await destination.send(message.embed, { notificationType: "codeRedeem" });
 			}
 		}
 	}

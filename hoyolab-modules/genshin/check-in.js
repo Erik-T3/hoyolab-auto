@@ -1,3 +1,5 @@
+const { t } = require("../../localization/index.js");
+
 module.exports = class CheckIn {
 	/** @type {import("../template")} */
 	#instance;
@@ -13,19 +15,21 @@ module.exports = class CheckIn {
 	async checkAndExecute () {
 		const accounts = this.#instance.accounts;
 		if (accounts.length === 0) {
-			app.Logger.warn("No active accounts found for Genshin Impact");
+			app.Logger.warn(t("No active accounts found for Genshin Impact"));
 			return;
 		}
 
-		const success = [];
+		const results = [];
 		for (const account of accounts) {
 			const info = await this.#getSignInfo(account.cookie);
 			if (!info.success) {
+				results.push(this.#failure(account, info.reason));
 				continue;
 			}
 
 			const awardsData = await this.#getAwardsData(account.cookie);
 			if (!awardsData.success) {
+				results.push(this.#failure(account, awardsData.reason));
 				continue;
 			}
 
@@ -44,16 +48,16 @@ module.exports = class CheckIn {
 			};
 
 			if (data.isSigned) {
-				app.Logger.info(`${this.#instance.fullName}:CheckIn`, `${account.nickname} already signed in today`);
+				app.Logger.info(`${this.#instance.fullName}:CheckIn`, t `${account.nickname} already signed in today`);
 
-				success.push({
+				results.push({
 					uid: account.uid,
 					platform: this.#instance.name,
 					rank: account.level,
 					username: account.nickname,
 					region: app.HoyoLab.getRegion(account.region),
 					total: data.total,
-					result: this.#instance.config.signedMessage,
+					result: t(this.#instance.config.signedMessage),
 					assets: {
 						...this.#instance.config.assets,
 						logo: this.#logo,
@@ -66,19 +70,20 @@ module.exports = class CheckIn {
 
 			const sign = await this.#sign(account.cookie);
 			if (!sign.success) {
+				results.push(this.#failure(account, sign.reason));
 				continue;
 			}
 
-			app.Logger.info(`${this.#instance.fullName}:CheckIn`, `(${account.uid}) ${account.nickname} Today's Reward: ${awardObject.name} x${awardObject.count}`);
+			app.Logger.info(`${this.#instance.fullName}:CheckIn`, t `(${account.uid}) ${account.nickname} Today's Reward: ${awardObject.name} x${awardObject.count}`);
 
-			success.push({
+			results.push({
 				uid: account.uid,
 				platform: this.#instance.name,
 				rank: account.level,
 				username: account.nickname,
 				region: app.HoyoLab.getRegion(account.region),
 				total: data.total + 1,
-				result: this.#instance.config.successMessage,
+				result: t(this.#instance.config.successMessage),
 				assets: {
 					...this.#instance.config.assets,
 					logo: this.#logo,
@@ -88,7 +93,24 @@ module.exports = class CheckIn {
 			});
 		}
 
-		return success;
+		return results;
+	}
+
+	#failure (account, reason) {
+		return {
+			failed: true,
+			uid: account.uid,
+			platform: this.#instance.name,
+			rank: account.level,
+			username: account.nickname,
+			region: app.HoyoLab.getRegion(account.region),
+			result: reason ?? t("Unknown error"),
+			assets: {
+				...this.#instance.config.assets,
+				logo: this.#logo,
+				color: this.#color
+			}
+		};
 	}
 
 	async #sign (cookieData) {
@@ -108,7 +130,7 @@ module.exports = class CheckIn {
 
 		if (res.statusCode !== 200) {
 			app.Logger.log(`${this.#instance.name}`, {
-				message: "Failed to sign in",
+				message: t("Failed to sign in"),
 				args: {
 					status: res.statusCode,
 					body: res.body
@@ -116,12 +138,13 @@ module.exports = class CheckIn {
 			});
 
 			return {
-				success: false
+				success: false,
+				reason: `HTTP ${res.statusCode}`
 			};
 		}
 		if (res.body.retcode !== 0) {
 			app.Logger.log(`${this.#instance.name}`, {
-				message: "Failed to sign in",
+				message: t("Failed to sign in"),
 				args: {
 					status: res.body.retcode,
 					body: res.body
@@ -129,7 +152,8 @@ module.exports = class CheckIn {
 			});
 
 			return {
-				success: false
+				success: false,
+				reason: res.body.message || `retcode ${res.body.retcode}`
 			};
 		}
 
@@ -154,7 +178,7 @@ module.exports = class CheckIn {
 
 		if (res.statusCode !== 200) {
 			app.Logger.log(this.#instance.fullName, {
-				message: "Failed to get sign info",
+				message: t("Failed to get sign info"),
 				args: {
 					status: res.statusCode,
 					body: res.body
@@ -162,12 +186,13 @@ module.exports = class CheckIn {
 			});
 
 			return {
-				success: false
+				success: false,
+				reason: `HTTP ${res.statusCode}`
 			};
 		}
 		if (res.body.retcode !== 0) {
 			app.Logger.log(this.#instance.fullName, {
-				message: "Info returned non-zero retcode",
+				message: t("Info returned non-zero retcode"),
 				args: {
 					status: res.body.retcode,
 					body: res.body
@@ -175,7 +200,8 @@ module.exports = class CheckIn {
 			});
 
 			return {
-				success: false
+				success: false,
+				reason: res.body.message || `retcode ${res.body.retcode}`
 			};
 		}
 
@@ -206,7 +232,7 @@ module.exports = class CheckIn {
 
 		if (res.statusCode !== 200) {
 			app.Logger.log(this.#instance.fullName, {
-				message: "Failed to get awards data",
+				message: t("Failed to get awards data"),
 				args: {
 					status: res.statusCode,
 					body: res.body
@@ -214,12 +240,13 @@ module.exports = class CheckIn {
 			});
 
 			return {
-				success: false
+				success: false,
+				reason: `HTTP ${res.statusCode}`
 			};
 		}
 		if (res.body.retcode !== 0) {
 			app.Logger.log(this.#instance.fullName, {
-				message: "Failed to get awards data",
+				message: t("Failed to get awards data"),
 				args: {
 					status: res.body.retcode,
 					body: res.body
@@ -227,14 +254,15 @@ module.exports = class CheckIn {
 			});
 
 			return {
-				success: false
+				success: false,
+				reason: res.body.message || `retcode ${res.body.retcode}`
 			};
 		}
 
 		const data = res.body.data;
 		if (data.awards.length === 0) {
 			throw new app.Error({
-				message: "No awards data available (?)",
+				message: t("No awards data available (?)"),
 				args: {
 					platform: this.#instance.name,
 					body: res.body

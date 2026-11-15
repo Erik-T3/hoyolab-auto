@@ -1,3 +1,5 @@
+const { t } = require("../localization/index.js");
+
 const WEBHOOK_REGEX = /https:\/\/discord.com\/api\/webhooks\/\d+\/[\w-]+/;
 
 module.exports = class Platform {
@@ -21,19 +23,19 @@ module.exports = class Platform {
 		this.#id = config.id;
 		if (!this.#id) {
 			throw new app.Error({
-				message: "No ID provided for Platform."
+				message: t("No ID provided for Platform.")
 			});
 		}
 		else if (typeof this.#id !== "number") {
 			throw new app.Error({
-				message: "Invalid ID must be a number."
+				message: t("Invalid ID must be a number.")
 			});
 		}
 
 		this.#url = config.url ?? null;
-		if (this.#url && !WEBHOOK_REGEX.test(this.#url)) {
+		if (name === "webhook" && this.#url && !WEBHOOK_REGEX.test(this.#url)) {
 			throw new app.Error({
-				message: "Invalid URL provided for Webhook Platform.",
+				message: t("Invalid URL provided for Webhook Platform."),
 				args: {
 					url: this.#url
 				}
@@ -72,14 +74,14 @@ module.exports = class Platform {
 	// eslint-disable-next-line no-unused-vars
 	async send (message, options = {}) {
 		throw new app.Error({
-			message: "Send method not implemented by the Platform."
+			message: t("Send method not implemented by the Platform.")
 		});
 	}
 
 	prepareMessage (messageData, options = {}) {
 		if (!options.type) {
 			throw new app.Error({
-				message: "No type provided for webhook message preparation",
+				message: t("No type provided for webhook message preparation"),
 				args: {
 					type: options.type
 				}
@@ -88,7 +90,7 @@ module.exports = class Platform {
 
 		if (typeof messageData !== "object" && typeof messageData !== "string") {
 			throw new app.Error({
-				message: "Invalid message data provided.",
+				message: t("Invalid message data provided."),
 				args: {
 					messageData
 				}
@@ -106,7 +108,7 @@ module.exports = class Platform {
 		const type = options.type;
 		if (!types.includes(type)) {
 			throw new app.Error({
-				message: "Invalid type provided.",
+				message: t("Invalid type provided."),
 				args: {
 					type
 				}
@@ -119,7 +121,7 @@ module.exports = class Platform {
 	// eslint-disable-next-line no-unused-vars
 	createUserMention (userData) {
 		throw new app.Error({
-			message: "This method must be implemented at the derived platofrm"
+			message: t("This method must be implemented at the derived platofrm")
 		});
 	}
 
@@ -141,6 +143,10 @@ module.exports = class Platform {
 		return Platform.list.filter(p => allowed.includes(p.id));
 	}
 
+	static getEmbedPlatforms (platforms = Platform.list) {
+		return platforms.filter(p => p.name === "webhook" || p.name === "gotify");
+	}
+
 	static get (identifier) {
 		if (identifier instanceof Platform) {
 			return identifier;
@@ -153,7 +159,7 @@ module.exports = class Platform {
 		}
 		else {
 			throw new app.Error({
-				message: "Unrecognized identifier type.",
+				message: t("Unrecognized identifier type."),
 				args: typeof identifier
 			});
 		}
@@ -171,9 +177,12 @@ module.exports = class Platform {
 			case "telegram":
 				InstancePlatform = require("./telegram.js");
 				break;
+			case "gotify":
+				InstancePlatform = require("./gotify.js");
+				break;
 			default:
 				throw new app.Error({
-					message: "Invalid platform type provided.",
+					message: t("Invalid platform type provided."),
 					args: {
 						type,
 						config

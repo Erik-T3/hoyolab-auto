@@ -1,11 +1,14 @@
+const { t } = require("../../localization/index.js");
+const DataCache = require("../../hoyolab-modules/cache.js");
+
 module.exports = {
 	name: "shop-status",
 	expression: "0 */1 * * *",
-	description: "This will check your current shop status and will fire a notification if your shop has finished selling.",
+	description: t("This will check your current shop status and will fire a notification if your shop has finished selling."),
 	code: (async function shopStatus () {
 		const accounts = app.HoyoLab.getActiveAccounts({ whitelist: "nap" });
 		if (accounts.length === 0) {
-			app.Logger.warn("Cron:ShopStatus", "No active accounts found to run shop status for.");
+			app.Logger.warn("Cron:ShopStatus", t("No active accounts found to run shop status for."));
 			return;
 		}
 
@@ -15,6 +18,7 @@ module.exports = {
 				continue;
 			}
 
+			await DataCache.invalidateCache(account.uid);
 			const notes = await platform.notes(account);
 			if (notes.success === false) {
 				continue;
@@ -41,35 +45,36 @@ module.exports = {
 				const region = app.HoyoLab.getRegion(account.region);
 				const embed = {
 					color: data.assets.color,
-					title: "Shop Status",
+					title: t("Shop Status"),
 					author: {
-						name: `${region} Server - ${account.nickname}`,
+						name: t `${region} Server - ${account.nickname}`,
 						icon_url: data.assets.logo
 					},
-					description: "Your shop has finished selling videos!",
+					description: t("Your shop has finished selling videos!"),
 					thumbnail: {
 						url: data.assets.logo
 					},
 					timestamp: new Date(),
 					footer: {
-						text: "Shop Status",
+						text: t("Shop Status"),
 						icon_url: data.assets.logo
 					}
 				};
 
-				for (const webhook of platforms.filter(p => p.name === "webhook")) {
-					const userId = webhook.createUserMention(account.discord);
-					await webhook.send(embed, {
+				for (const destination of app.Platform.getEmbedPlatforms(platforms)) {
+					const userId = destination.createUserMention(account.discord);
+					await destination.send(embed, {
 						content: userId,
 						author: data.assets.author,
-						icon: data.assets.logo
+						icon: data.assets.logo,
+						notificationType: "shopStatus"
 					});
 				}
 
 				const messageText = [
-					`🛒 Shop Status`,
-					`UID: ${account.uid} ${account.nickname}`,
-					`Your shop has finished selling videos!`
+					t `🛒 Shop Status`,
+					t `UID: ${account.uid} ${account.nickname}`,
+					t `Your shop has finished selling videos!`
 				].join("\n");
 
 				const escapedMessage = app.Utils.escapeCharacters(messageText);

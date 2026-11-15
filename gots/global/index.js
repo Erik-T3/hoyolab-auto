@@ -1,3 +1,5 @@
+const { t } = require("../../localization/index.js");
+
 const redactSecrets = (value) => typeof value === "string"
 	? value.replaceAll(/(api\.telegram\.org\/bot)[^/\s)]+/gi, "$1[REDACTED]")
 	: value;
@@ -53,7 +55,7 @@ const definition = {
 							}
 						});
 
-						app.Logger.error("GotRequest", `Request failed (${method} ${endpoint ?? "UNKNOWN"}) code=${code ?? "N/A"} after ${retryAttempts} retries`);
+						app.Logger.error("GotRequest", t `Request failed (${method} ${endpoint ?? "UNKNOWN"}) code=${code ?? "N/A"} after ${retryAttempts} retries`);
 
 						return err;
 					}

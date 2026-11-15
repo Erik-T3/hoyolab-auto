@@ -1,3 +1,5 @@
+const { t } = require("../localization/index.js");
+
 module.exports = class RegionalTaskManager {
 	constructor () {
 		this.tasks = new Map();
@@ -39,13 +41,16 @@ module.exports = class RegionalTaskManager {
 						: null;
 
 					if (!lastExecution || !this.isSameDay(lastExecution, now, task.formatter)) {
-						await task.callback(account);
+						const completed = await task.callback(account);
+						if (completed === false) {
+							continue;
+						}
 						account[lastExecutionKey] = now.toISOString();
 
 						const platform = app.HoyoLab.get(account.platform);
 						platform.update(account);
 
-						app.Logger.debug(`RegionalTaskManager:${taskName}`, `Executed for account ${account.uid} in region ${account.region}`);
+						app.Logger.debug(`RegionalTaskManager:${taskName}`, t `Executed for account ${account.uid} in region ${account.region}`);
 					}
 				}
 			}

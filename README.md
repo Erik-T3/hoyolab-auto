@@ -122,7 +122,19 @@ language: 'it-it',
 This sets the existing HoYoLAB language headers and locale fields used by diaries,
 Genshin code redemption, Mimo, and Hilichurl. Genshin daily check-in requests
 (`info`, `home`, and `sign`) also use this locale in their `lang` query parameter.
-The setup generator supports importing and exporting this option.
+The same option selects the software language for commands, notifications, logs,
+errors, and the setup generator. An exact regional catalog (such as `it-ch.js`)
+takes precedence over the generic language catalog (`it.js`). English and Italian
+are included; unsupported software locales and missing translations fall back to English without changing
+the configured API locale. For example, `language: 'ja-jp'` still requests Japanese
+from HoYoLAB while the software uses English. Restart the application after changing
+its language. Game names, command names, configuration keys, and API-provided text
+are not translated by the software.
+
+The setup generator switches language when this field changes or a configuration
+is imported, and preserves the locale when exporting. Startup errors before a
+configuration can be read remain in English. See [translation maintenance](localization/README.md)
+for adding or updating a language through one catalog file.
 
 ### Cache File Location
 
@@ -176,8 +188,41 @@ The optional [HoYoLAB cookie helper](https://github.com/Smexhy/hoyolab-cookie-he
 can obtain it locally on Windows, macOS, or Linux. It is a third-party helper
 and is only needed for automatic cookie refresh.
 
+### Sharing one cookie across games
+
+If several games use the same HoYoLAB login, you can define the cookie once in
+a top-level `cookies` list and point each account entry at it with `cookieKey`:
+
+```json5
+cookies: {
+    main: 'your cookie here',
+},
+accounts: [
+    {
+        id: 3,
+        active: true,
+        type: 'genshin',
+        data: [
+            {
+                cookieKey: 'main',
+                // ...other options
+            },
+        ],
+    },
+],
+```
+
+A `cookie` set directly on an entry always takes priority over `cookieKey`, so
+existing configs keep working unchanged. If `cookieKey` does not match any entry
+in `cookies`, a warning is logged and that account is skipped.
+
 ## Notifications Setup
 For setting up Discord or Telegram notifications, refer to the [setup folder](https://github.com/torikushiii/hoyolab-auto/tree/main/setup).
+
+[Gotify notifications](./setup/GOTIFY.md) are also supported. Configure a `gotify`
+platform with your server URL and application token to receive check-in results,
+reminders, redemption results, and cookie alerts. The setup generator can import
+and export these settings. Per-account `allowedPlatforms` routing applies to Gotify.
 
 ## Running with Docker
 

@@ -1,9 +1,12 @@
+const { t } = require("../localization/index.js");
+
 const { CronJob } = require("cron");
 
 const CheckIn = require("./check-in/index.js");
 const CodeRedeem = require("./code-redeem/index.js");
 const DailiesReminder = require("./dailies-reminder/index.js");
 const Expedition = require("./expedition/index.js");
+const GiftCodeRedeem = require("./gift-code-redeem/index.js");
 const Hilichurl = require("./hilichurl/index.js");
 const HowlScratchCard = require("./howl-scratch-card/index.js");
 const Mimo = require("./mimo/index.js");
@@ -21,6 +24,7 @@ const definitions = [
 	CodeRedeem,
 	DailiesReminder,
 	Expedition,
+	GiftCodeRedeem,
 	Hilichurl,
 	HowlScratchCard,
 	Mimo,
@@ -41,7 +45,7 @@ const FixedScheduleCrons = [
 const initCrons = () => {
 	const { blacklist = [], whitelist = []} = config.crons;
 	if (blacklist.length > 0 && whitelist.length > 0) {
-		throw new Error(`Cannot have both a blacklist and a whitelist for crons`);
+		throw new Error(t `Cannot have both a blacklist and a whitelist for crons`);
 	}
 
 	const crons = [];
@@ -64,14 +68,21 @@ const initCrons = () => {
 		const expression = FixedScheduleCrons.includes(definition.name)
 			? definition.expression
 			: config.crons[name] || definition.expression;
-		const job = new CronJob(expression, () => cron.code(cron), null, false, definition.timeZone);
+		const timeZone = definition.name === "check-in"
+			? config.crons.checkInTimeZone ?? definition.timeZone
+			: definition.timeZone;
+		const job = new CronJob(expression, () => cron.code(cron), null, false, timeZone);
 		job.start();
+		for (const schedule of definition.additionalSchedules || []) {
+			const additionalJob = new CronJob(schedule.expression, () => cron.code({ ...cron, ...schedule }), null, false, schedule.timeZone);
+			additionalJob.start();
+		}
 
 		crons.job = job;
 		crons.push(cron);
 	}
 
-	app.Logger.info("Cron", `Initialized ${crons.length} cron jobs`);
+	app.Logger.info("Cron", t `Initialized ${crons.length} cron jobs`);
 	return crons;
 };
 
